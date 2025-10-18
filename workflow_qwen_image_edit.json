@@ -175,23 +175,24 @@
   "93": {
     "inputs": {
       "upscale_method": "lanczos",
-      "megapixels": 1
+      "megapixels": 1,
+      "image": [
+        "117",
+        0
+      ]
     },
     "class_type": "ImageScaleToTotalPixels",
     "_meta": {
       "title": "총 픽셀 수에 맞춰 이미지 크기 조정"
     }
   },
-  "102": {
+  "117": {
     "inputs": {
-      "images": [
-        "93",
-        0
-      ]
+      "data": ""
     },
-    "class_type": "SaveImageWebsocket",
+    "class_type": "LoadImageFromBase64",
     "_meta": {
-      "title": "이미지 웹소켓 전송"
+      "title": "Load Image From Base64"
     }
   }
 }

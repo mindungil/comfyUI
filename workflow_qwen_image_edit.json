@@ -188,7 +188,7 @@
   },
   "117": {
     "inputs": {
-      "data": ""
+      "data": "%%B64IMAGE%%"
     },
     "class_type": "LoadImageFromBase64",
     "_meta": {

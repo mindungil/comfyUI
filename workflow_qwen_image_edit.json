@@ -156,15 +156,6 @@
       "title": "TextEncodeQwenImageEdit"
     }
   },
-  "78": {
-    "inputs": {
-      "image": "Qwen-Image_00043_.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "이미지 로드"
-    }
-  },
   "88": {
     "inputs": {
       "pixels": [
@@ -184,15 +175,23 @@
   "93": {
     "inputs": {
       "upscale_method": "lanczos",
-      "megapixels": 1,
-      "image": [
-        "78",
-        0
-      ]
+      "megapixels": 1
     },
     "class_type": "ImageScaleToTotalPixels",
     "_meta": {
       "title": "총 픽셀 수에 맞춰 이미지 크기 조정"
+    }
+  },
+  "102": {
+    "inputs": {
+      "images": [
+        "93",
+        0
+      ]
+    },
+    "class_type": "SaveImageWebsocket",
+    "_meta": {
+      "title": "이미지 웹소켓 전송"
     }
   }
 }

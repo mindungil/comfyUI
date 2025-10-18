@@ -41,6 +41,8 @@ from protocol import BinaryEventTypes
 
 # Import cache control middleware
 from middleware.cache_middleware import cache_control
+# Import authentication middleware
+from middleware.auth_middleware import auth_middleware, create_session, authenticate_user, destroy_session
 
 async def send_socket_catch_exception(function, message):
     try:
@@ -159,7 +161,8 @@ class PromptServer():
         self.client_session:Optional[aiohttp.ClientSession] = None
         self.number = 0
 
-        middlewares = [cache_control]
+        # Add authentication middleware first (before other middlewares)
+        middlewares = [auth_middleware, cache_control]
         if args.enable_compress_response_body:
             middlewares.append(compress_body)
 
@@ -244,6 +247,65 @@ class PromptServer():
                 self.sockets.pop(sid, None)
                 self.sockets_metadata.pop(sid, None)
             return ws
+
+        @routes.post("/login")
+        async def login(request):
+            """Handle login requests"""
+            try:
+                data = await request.json()
+                username = data.get('username', '').strip()
+                password = data.get('password', '')
+
+                if not username or not password:
+                    return web.json_response(
+                        {'success': False, 'message': '아이디와 비밀번호를 입력해주세요.'},
+                        status=400
+                    )
+
+                # Authenticate user
+                if authenticate_user(username, password):
+                    # Create session
+                    session_id = create_session(username)
+
+                    # Create response with session cookie
+                    response = web.json_response({
+                        'success': True,
+                        'message': '로그인 성공'
+                    })
+
+                    # Set secure session cookie
+                    response.set_cookie(
+                        'comfyui_session',
+                        session_id,
+                        max_age=86400,  # 24 hours
+                        httponly=True,
+                        samesite='Lax'
+                    )
+
+                    return response
+                else:
+                    return web.json_response(
+                        {'success': False, 'message': '아이디 또는 비밀번호가 올바르지 않습니다.'},
+                        status=401
+                    )
+
+            except Exception as e:
+                logging.error(f"Login error: {e}")
+                return web.json_response(
+                    {'success': False, 'message': '서버 오류가 발생했습니다.'},
+                    status=500
+                )
+
+        @routes.post("/logout")
+        async def logout(request):
+            """Handle logout requests"""
+            session_id = request.cookies.get('comfyui_session')
+            if session_id:
+                destroy_session(session_id)
+
+            response = web.json_response({'success': True, 'message': '로그아웃 되었습니다.'})
+            response.del_cookie('comfyui_session')
+            return response
 
         @routes.get("/")
         async def get_root(request):
@@ -829,6 +891,16 @@ class PromptServer():
             self.app.add_routes([
                 web.static('/docs', embedded_docs_path)
             ])
+
+        # Add login page route (must be before static route)
+        async def serve_login_page(request):
+            response = web.FileResponse(os.path.join(os.path.dirname(os.path.realpath(__file__)), "login.html"))
+            response.headers['Cache-Control'] = 'no-cache'
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
+
+        self.app.router.add_get('/login.html', serve_login_page)
 
         self.app.add_routes([
             web.static('/', self.web_root),

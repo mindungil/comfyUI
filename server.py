@@ -31,6 +31,9 @@ import node_helpers
 from comfyui_version import __version__
 from app.frontend_management import FrontendManager
 from comfy_api.internal import _ComfyNodeInternal
+import secrets
+import hashlib
+from dotenv import load_dotenv
 
 from app.user_manager import UserManager
 from app.model_manager import ModelFileManager
@@ -42,6 +45,10 @@ from protocol import BinaryEventTypes
 
 # Import cache control middleware
 from middleware.cache_middleware import cache_control
+
+# Load environment variables
+load_dotenv()
+COMFYUI_API_KEY = os.getenv('COMFYUI_API_KEY')
 
 async def send_socket_catch_exception(function, message):
     try:
@@ -163,6 +170,69 @@ def create_origin_only_middleware():
 
     return origin_only_middleware
 
+
+def create_api_key_auth_middleware(sessions_dict):
+    """
+    Middleware to protect API endpoints with API key or session authentication.
+    - Static files, /login, /favicon.ico are public
+    - / (root) is handled by its route handler
+    - All other endpoints require either:
+      1. Authorization: Bearer <token> header matching COMFYUI_API_KEY, or
+      2. Valid session_token cookie
+    """
+    @web.middleware
+    async def api_key_auth_middleware(request: web.Request, handler):
+        path = request.path
+
+        # Public paths that don't require authentication
+        public_paths = [
+            '/login',
+            '/favicon.ico',
+            '/api/login',
+        ]
+
+        # Static file patterns that are public
+        if (path in public_paths or
+            path.startswith('/scripts/') or
+            path.startswith('/extensions/') or
+            path.startswith('/templates/') or
+            path.startswith('/docs/') or
+            path.endswith('.js') or
+            path.endswith('.css') or
+            path.endswith('.png') or
+            path.endswith('.jpg') or
+            path.endswith('.ico') or
+            path.endswith('.svg') or
+            path.endswith('.woff') or
+            path.endswith('.woff2') or
+            path.endswith('.ttf')):
+            return await handler(request)
+
+        # Check API key in Authorization header (Bearer token)
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            api_key = auth_header[7:]  # Remove 'Bearer ' prefix
+            if api_key == COMFYUI_API_KEY:
+                return await handler(request)
+
+        # Check session token in cookie
+        session_token = request.cookies.get('session_token')
+        if session_token and session_token in sessions_dict:
+            return await handler(request)
+
+        # For root path, let the handler deal with it (it has its own redirect logic)
+        if path == '/':
+            return await handler(request)
+
+        # Unauthorized - return 401
+        return web.json_response({
+            "error": "Unauthorized",
+            "message": "Valid API key (Authorization: Bearer header) or session required"
+        }, status=401)
+
+    return api_key_auth_middleware
+
+
 class PromptServer():
     def __init__(self, loop):
         PromptServer.instance = self
@@ -183,6 +253,9 @@ class PromptServer():
         self.client_session:Optional[aiohttp.ClientSession] = None
         self.number = 0
 
+        # Session management for authentication (initialized early for middleware)
+        self.sessions = {}  # {session_token: {"username": "...", "created_at": timestamp}}
+
         middlewares = [cache_control, deprecation_warning]
         if args.enable_compress_response_body:
             middlewares.append(compress_body)
@@ -191,6 +264,9 @@ class PromptServer():
             middlewares.append(create_cors_middleware(args.enable_cors_header))
         else:
             middlewares.append(create_origin_only_middleware())
+
+        # Add API key authentication middleware
+        middlewares.append(create_api_key_auth_middleware(self.sessions))
 
         max_upload_size = round(args.max_upload_size * 1024 * 1024)
         self.app = web.Application(client_max_size=max_upload_size, middlewares=middlewares)
@@ -271,11 +347,34 @@ class PromptServer():
 
         @routes.get("/")
         async def get_root(request):
+            # Check if user is logged in
+            session_token = request.cookies.get('session_token')
+            if not session_token or session_token not in self.sessions:
+                # Not logged in, redirect to login page
+                return web.HTTPFound('/login')
+
             response = web.FileResponse(os.path.join(self.web_root, "index.html"))
             response.headers['Cache-Control'] = 'no-cache'
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
             return response
+
+        @routes.get("/login")
+        async def get_login(request):
+            # If already logged in, redirect to main page
+            session_token = request.cookies.get('session_token')
+            if session_token and session_token in self.sessions:
+                return web.HTTPFound('/')
+
+            login_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "login.html")
+            if os.path.exists(login_path):
+                response = web.FileResponse(login_path)
+                response.headers['Cache-Control'] = 'no-cache'
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
+            else:
+                return web.Response(status=404, text="Login page not found")
 
         @routes.get("/embeddings")
         def get_embeddings(request):
@@ -817,6 +916,68 @@ class PromptServer():
                     self.prompt_queue.delete_history_item(id_to_delete)
 
             return web.Response(status=200)
+
+        @routes.post("/login")
+        async def post_login(request):
+            try:
+                json_data = await request.json()
+                username = json_data.get("username", "")
+                password = json_data.get("password", "")
+
+                # TODO: Replace with proper authentication
+                # This is a simple hardcoded example
+                if username == "admin" and password == "admin":
+                    # Create session token
+                    session_token = secrets.token_urlsafe(32)
+                    import time
+                    self.sessions[session_token] = {
+                        "username": username,
+                        "created_at": time.time()
+                    }
+
+                    # Create response with cookie
+                    response = web.json_response({
+                        "success": True,
+                        "message": "로그인 성공"
+                    })
+
+                    # Set secure session cookie
+                    response.set_cookie(
+                        'session_token',
+                        session_token,
+                        max_age=86400,  # 24 hours
+                        httponly=True,
+                        path='/'
+                    )
+
+                    return response
+                else:
+                    return web.json_response({
+                        "success": False,
+                        "message": "아이디 또는 비밀번호가 올바르지 않습니다."
+                    }, status=401)
+            except Exception as e:
+                logging.error(f"Login error: {e}")
+                return web.json_response({
+                    "success": False,
+                    "message": "로그인 처리 중 오류가 발생했습니다."
+                }, status=500)
+
+        @routes.post("/logout")
+        async def post_logout(request):
+            session_token = request.cookies.get('session_token')
+            if session_token and session_token in self.sessions:
+                del self.sessions[session_token]
+
+            response = web.json_response({
+                "success": True,
+                "message": "로그아웃 성공"
+            })
+
+            # Clear the session cookie
+            response.del_cookie('session_token', path='/')
+
+            return response
 
     async def setup(self):
         timeout = aiohttp.ClientTimeout(total=None) # no timeout
